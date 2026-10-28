@@ -6,6 +6,12 @@ TagManager:
   tags:
   - Scrap
   - Sapling
+  - Recycler
+  - SoilPatch
+  - CorpoDrone
+  - EcoJet
+  - Tree
+  - Barier
   layers:
   - Default
   - TransparentFX
