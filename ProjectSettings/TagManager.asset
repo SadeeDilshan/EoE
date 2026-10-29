@@ -12,6 +12,7 @@ TagManager:
   - EcoJet
   - Tree
   - Barier
+  - Terminal
   layers:
   - Default
   - TransparentFX
