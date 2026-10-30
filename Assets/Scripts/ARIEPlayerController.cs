@@ -22,17 +22,25 @@ public class ARIEPlayerController : MonoBehaviour
     public float mouseSensitivity = 2f;
     private float xRotation = 0f;
 
-    [Header("Recycling & Level Puzzles")]
+    [Header("Seamless Map Crafting & Inventory")]
     public float interactRange = 4f;
     public int scrapCount = 0;
     public int energyCells = 0;
-    public GameObject securityDoor;
-    public TMP_Text hudText;
+    public bool hasSapling = false;
+    public bool hasSoilScanner = false;
+    public int barrierInventoryCount = 0;
+
+    [Header("Map References & UI")]
+    public GameObject securityDoor;          // Drag Scrapyard Blast Door here
+    public GameObject barrierPrefab;         // Drag Barrier Prefab (with NavMeshObstacle) here
+    public Level3TreeDefense defenseManager; // Drag Level3Manager here
+    public TMP_Text hudText;                 // Top-left stats HUD
+    public TMP_Text objectiveMessageText;    // Drag MessageText here for live hints
 
     [Header("Pause Menu & Controls UI Panels")]
-    public GameObject pauseMenuPanel;    // Main Pause Menu (Resume, Restart, Controls, Quit)
-    public GameObject controlsMenuPanel; // Sub-panel for remapping keys
-    public TMP_Text rebindStatusText;    // Shows "Press any key..." when rebinding
+    public GameObject pauseMenuPanel;
+    public GameObject controlsMenuPanel;
+    public TMP_Text rebindStatusText;
     private bool isPaused = false;
 
     [Header("Control Binding Button Texts (Optional)")]
@@ -43,6 +51,8 @@ public class ARIEPlayerController : MonoBehaviour
     public TMP_Text jumpKeyText;
     public TMP_Text crouchKeyText;
     public TMP_Text interactKeyText;
+    public TMP_Text craftBarrierKeyText;
+    public TMP_Text placeBarrierKeyText;
 
     [Header("Customizable Controls (Saved in PlayerPrefs)")]
     public static KeyCode keyForward = KeyCode.W;
@@ -52,8 +62,10 @@ public class ARIEPlayerController : MonoBehaviour
     public static KeyCode keyJump = KeyCode.Space;
     public static KeyCode keyCrouch = KeyCode.C;
     public static KeyCode keyInteract = KeyCode.E;
+    public static KeyCode keyCraftBarrier = KeyCode.Q;
+    public static KeyCode keyPlaceBarrier = KeyCode.F;
 
-    private string waitingForKeyAction = ""; // Tracks which control is currently being changed
+    private string waitingForKeyAction = "";
 
     [Header("Global Circular Economy Metrics")]
     public static int batteryLives = 3;
@@ -70,6 +82,15 @@ public class ARIEPlayerController : MonoBehaviour
         if (playerCamera == null && Camera.main != null)
             playerCamera = Camera.main.transform;
 
+        if (defenseManager == null)
+            defenseManager = FindFirstObjectByType<Level3TreeDefense>();
+
+        // Auto-find UI panels if left unassigned in Inspector
+        if (pauseMenuPanel == null)
+            pauseMenuPanel = GameObject.Find("PauseMenuPanel");
+        if (controlsMenuPanel == null)
+            controlsMenuPanel = GameObject.Find("ControlsMenuPanel");
+
         LoadSavedControlsAndStats();
 
         Time.timeScale = 1f;
@@ -84,14 +105,14 @@ public class ARIEPlayerController : MonoBehaviour
 
     void Update()
     {
-        // 1. If currently waiting for user to press a new key in Controls Menu
+        // 1. Listen for new key press if rebinding controls
         if (!string.IsNullOrEmpty(waitingForKeyAction))
         {
             ListenForKeyRebind();
             return;
         }
 
-        // 2. Press ESC to toggle Pause Menu
+        // 2. Toggle Pause Menu with ESC
         if (Input.GetKeyDown(KeyCode.Escape))
         {
             if (isPaused)
@@ -104,6 +125,7 @@ public class ARIEPlayerController : MonoBehaviour
 
         HandleMouseLook();
         HandleMovementJumpAndCrouch();
+        HandleBarrierPlacement();
         HandleInteraction();
     }
 
@@ -144,7 +166,6 @@ public class ARIEPlayerController : MonoBehaviour
         totalDronesRebooted = 0;
         SaveProgress();
 
-        // Loads Level1 if it exists, otherwise scene index 0
         if (Application.CanStreamedLevelBeLoaded("Level1"))
             SceneManager.LoadScene("Level1");
         else
@@ -176,7 +197,6 @@ public class ARIEPlayerController : MonoBehaviour
 
     // ==================== KEY REMAPPING SYSTEM ====================
 
-    // Call this from your UI Buttons! Pass in: "Forward", "Backward", "Left", "Right", "Jump", "Crouch", or "Interact"
     public void StartRebindingKey(string actionName)
     {
         waitingForKeyAction = actionName;
@@ -192,23 +212,15 @@ public class ARIEPlayerController : MonoBehaviour
         {
             if (Input.GetKeyDown(kcode))
             {
-                // Ignore left mouse click (from clicking the UI button itself)
                 if (kcode == KeyCode.Mouse0) continue;
 
-                // Cancel rebinding if ESC is pressed
                 if (kcode == KeyCode.Escape)
                 {
                     waitingForKeyAction = "";
                     if (rebindStatusText != null) rebindStatusText.text = "Rebind cancelled.";
                     return;
                 }
-                // Auto-find panels by name if you forgot to drag them into the Inspector
-                if (pauseMenuPanel == null)
-                    pauseMenuPanel = GameObject.Find("PauseMenuPanel");
-                if (controlsMenuPanel == null)
-                    controlsMenuPanel = GameObject.Find("ControlsMenuPanel");
 
-                // Assign the new key
                 switch (waitingForKeyAction)
                 {
                     case "Forward": keyForward = kcode; break;
@@ -218,6 +230,8 @@ public class ARIEPlayerController : MonoBehaviour
                     case "Jump": keyJump = kcode; break;
                     case "Crouch": keyCrouch = kcode; break;
                     case "Interact": keyInteract = kcode; break;
+                    case "CraftBarrier": keyCraftBarrier = kcode; break;
+                    case "PlaceBarrier": keyPlaceBarrier = kcode; break;
                 }
 
                 PlayerPrefs.SetString("Key_" + waitingForKeyAction, kcode.ToString());
@@ -242,6 +256,8 @@ public class ARIEPlayerController : MonoBehaviour
         keyJump = KeyCode.Space;
         keyCrouch = KeyCode.C;
         keyInteract = KeyCode.E;
+        keyCraftBarrier = KeyCode.Q;
+        keyPlaceBarrier = KeyCode.F;
 
         PlayerPrefs.SetString("Key_Forward", keyForward.ToString());
         PlayerPrefs.SetString("Key_Backward", keyBackward.ToString());
@@ -250,6 +266,8 @@ public class ARIEPlayerController : MonoBehaviour
         PlayerPrefs.SetString("Key_Jump", keyJump.ToString());
         PlayerPrefs.SetString("Key_Crouch", keyCrouch.ToString());
         PlayerPrefs.SetString("Key_Interact", keyInteract.ToString());
+        PlayerPrefs.SetString("Key_CraftBarrier", keyCraftBarrier.ToString());
+        PlayerPrefs.SetString("Key_PlaceBarrier", keyPlaceBarrier.ToString());
         PlayerPrefs.Save();
 
         UpdateKeyUI();
@@ -266,6 +284,8 @@ public class ARIEPlayerController : MonoBehaviour
         if (jumpKeyText != null) jumpKeyText.text = $"Jump: {keyJump}";
         if (crouchKeyText != null) crouchKeyText.text = $"Crouch: {keyCrouch}";
         if (interactKeyText != null) interactKeyText.text = $"Interact: {keyInteract}";
+        if (craftBarrierKeyText != null) craftBarrierKeyText.text = $"Craft Barrier: {keyCraftBarrier}";
+        if (placeBarrierKeyText != null) placeBarrierKeyText.text = $"Place Barrier: {keyPlaceBarrier}";
     }
 
     void LoadSavedControlsAndStats()
@@ -280,6 +300,8 @@ public class ARIEPlayerController : MonoBehaviour
         keyJump = ParseKey("Key_Jump", KeyCode.Space);
         keyCrouch = ParseKey("Key_Crouch", KeyCode.C);
         keyInteract = ParseKey("Key_Interact", KeyCode.E);
+        keyCraftBarrier = ParseKey("Key_CraftBarrier", KeyCode.Q);
+        keyPlaceBarrier = ParseKey("Key_PlaceBarrier", KeyCode.F);
     }
 
     KeyCode ParseKey(string prefKey, KeyCode defaultKey)
@@ -290,7 +312,7 @@ public class ARIEPlayerController : MonoBehaviour
         return defaultKey;
     }
 
-    // ==================== PLAYER MOVEMENT & INTERACTION ====================
+    // ==================== PLAYER MOVEMENT & BARRIER PLACEMENT ====================
 
     void LockCursor(bool locked)
     {
@@ -352,12 +374,70 @@ public class ARIEPlayerController : MonoBehaviour
         controller.Move(finalMovement * Time.deltaTime);
     }
 
+    void HandleBarrierPlacement()
+    {
+        // Press F (or custom keyPlaceBarrier) to deploy a crafted Barrier in front of AR-IE
+        if (Input.GetKeyDown(keyPlaceBarrier))
+        {
+            if (barrierInventoryCount > 0 && barrierPrefab != null)
+            {
+                Vector3 spawnPos = transform.position + transform.forward * 2.5f;
+                spawnPos.y = transform.position.y;
+                Quaternion spawnRot = Quaternion.Euler(0f, transform.eulerAngles.y, 0f);
+
+                Instantiate(barrierPrefab, spawnPos, spawnRot);
+                barrierInventoryCount--;
+                UpdateHUD();
+
+                if (objectiveMessageText != null)
+                    objectiveMessageText.text = $"Scrap Barrier Deployed! ({barrierInventoryCount} left in inventory)";
+            }
+            else if (barrierInventoryCount <= 0 && objectiveMessageText != null)
+            {
+                objectiveMessageText.text = $"No Barriers in inventory! Return to Recycler with 2 Scrap & press [{keyCraftBarrier}] to craft one.";
+            }
+        }
+    }
+
+    // ==================== SEAMLESS MAP INTERACTIONS ====================
+
     void HandleInteraction()
     {
+        if (playerCamera == null) return;
+
+        // 1. Press Q (or keyCraftBarrier) while aiming at Recycler to craft a Portable Barrier (Costs 2 Scrap)
+        if (Input.GetKeyDown(keyCraftBarrier))
+        {
+            Ray qRay = new Ray(playerCamera.position, playerCamera.forward);
+            RaycastHit[] qHits = Physics.SphereCastAll(qRay, 0.35f, interactRange);
+
+            foreach (RaycastHit hit in qHits)
+            {
+                if (hit.collider.gameObject == this.gameObject || hit.collider.transform.IsChildOf(this.transform))
+                    continue;
+
+                if (hit.collider.CompareTag("Recycler") || hit.collider.gameObject.name.Contains("Recycler"))
+                {
+                    if (scrapCount >= 2)
+                    {
+                        scrapCount -= 2;
+                        barrierInventoryCount++;
+                        UpdateHUD();
+                        if (objectiveMessageText != null)
+                            objectiveMessageText.text = $"Crafted 1x Scrap Barrier! Press [{keyPlaceBarrier}] near the soil patch to place it.";
+                    }
+                    else if (objectiveMessageText != null)
+                    {
+                        objectiveMessageText.text = $"Need 2 Scrap to craft a Defensive Barrier [{keyCraftBarrier}]! (Current: {scrapCount}/2)";
+                    }
+                    return;
+                }
+            }
+        }
+
+        // 2. Press E (or keyInteract) for standard interactions
         if (Input.GetKeyDown(keyInteract))
         {
-            if (playerCamera == null) return;
-
             Ray ray = new Ray(playerCamera.position, playerCamera.forward);
             Debug.DrawRay(ray.origin, ray.direction * interactRange, Color.green, 2f);
 
@@ -368,6 +448,7 @@ public class ARIEPlayerController : MonoBehaviour
                 if (hit.collider.gameObject == this.gameObject || hit.collider.transform.IsChildOf(this.transform))
                     continue;
 
+                // A. Collect Scrap
                 if (hit.collider.CompareTag("Scrap") || hit.collider.gameObject.name.Contains("Scrap"))
                 {
                     scrapCount++;
@@ -377,33 +458,97 @@ public class ARIEPlayerController : MonoBehaviour
                     UpdateHUD();
                     return;
                 }
+                // B. Master Recycler (Stage 1: Open Door -> Stage 2: Craft Soil Scanner)
                 else if (hit.collider.CompareTag("Recycler") || hit.collider.gameObject.name.Contains("Recycler"))
                 {
-                    if (scrapCount >= 3)
+                    // Stage 1: Blast Door is still closed (Requires 3 Scrap)
+                    if (securityDoor != null && securityDoor.activeSelf)
                     {
-                        scrapCount -= 3;
-                        energyCells++;
-                        UpdateHUD();
-                        if (securityDoor != null)
+                        if (scrapCount >= 3)
+                        {
+                            scrapCount -= 3;
+                            energyCells++;
                             securityDoor.SetActive(false);
+                            UpdateHUD();
+                            if (objectiveMessageText != null)
+                                objectiveMessageText.text = "DOOR OPENED! Follow the glowing dot into the Rock Cave to find the Sapling.";
+                        }
+                        else if (objectiveMessageText != null)
+                        {
+                            objectiveMessageText.text = $"Need 3 Scrap to power Blast Door! (Current: {scrapCount}/3)";
+                        }
+                    }
+                    // Stage 2: Door is open, craft Soil Scanner (Requires 2 Scrap)
+                    else if (!hasSoilScanner)
+                    {
+                        if (scrapCount >= 2)
+                        {
+                            scrapCount -= 2;
+                            hasSoilScanner = true;
+                            UpdateHUD();
+                            if (objectiveMessageText != null)
+                                objectiveMessageText.text = $"SOIL SCANNER CRAFTED! Tip: Press [{keyCraftBarrier}] on Recycler (2 Scrap) to craft Barriers before planting!";
+                        }
+                        else if (objectiveMessageText != null)
+                        {
+                            objectiveMessageText.text = $"Need 2 Scrap to craft Soil Scanner! (Or press [{keyCraftBarrier}] with 2 Scrap to craft a Barrier)";
+                        }
+                    }
+                    else if (objectiveMessageText != null)
+                    {
+                        objectiveMessageText.text = $"Door & Scanner complete! Press [{keyCraftBarrier}] here with 2 Scrap to craft extra Barriers.";
                     }
                     return;
                 }
+                // C. Rescue Sapling inside the Rock Cave
                 else if (hit.collider.CompareTag("Sapling") || hit.collider.gameObject.name.Contains("Sapling"))
                 {
+                    hasSapling = true;
                     Destroy(hit.collider.gameObject);
-                    if (hudText != null)
-                        hudText.text = "SAPLING SECURED! Proceeding to Level 2...";
-                    Invoke(nameof(LoadNextLevel), 2f);
+                    UpdateHUD();
+                    if (objectiveMessageText != null)
+                        objectiveMessageText.text = "SAPLING SECURED! Gather 2 Scrap & return to the Recycler to craft a Soil Scanner.";
                     return;
                 }
-                else if (hit.collider.CompareTag("SoilPatch") || hit.collider.gameObject.name.Contains("FertileSoil"))
+                // D. Scan Soil Patch & Plant Sapling
+                else if (hit.collider.GetComponent<SoilPatchSlot>() != null || hit.collider.CompareTag("SoilPatch") || hit.collider.gameObject.name.Contains("FertileSoil"))
                 {
-                    if (hudText != null)
-                        hudText.text = "SAPLING PLANTED! Proceeding to Level 3...";
-                    Invoke(nameof(LoadNextLevel), 2f);
+                    SoilPatchSlot patch = hit.collider.GetComponent<SoilPatchSlot>();
+
+                    if (!hasSapling)
+                    {
+                        if (objectiveMessageText != null)
+                            objectiveMessageText.text = "Find the Sapling inside the Rock Cave first!";
+                        return;
+                    }
+                    if (!hasSoilScanner)
+                    {
+                        if (objectiveMessageText != null)
+                            objectiveMessageText.text = "SOIL QUALITY UNKNOWN! Return to the Zone 1 Recycler with 2 Scrap to craft a Soil Scanner!";
+                        return;
+                    }
+                    if (patch != null && !patch.isScanned)
+                    {
+                        string scanResult = patch.ScanSoil();
+                        if (objectiveMessageText != null)
+                            objectiveMessageText.text = scanResult;
+                        return;
+                    }
+                    if (patch == null || patch.isFertile)
+                    {
+                        // Plant the Sapling & start the 60s Tree Defense event!
+                        if (defenseManager != null)
+                        {
+                            defenseManager.StartDefenseEvent(hit.collider.transform.position);
+                        }
+                    }
+                    else if (objectiveMessageText != null)
+                    {
+                        objectiveMessageText.text = "This soil is toxic! Find and scan another Soil Patch.";
+                    }
                     return;
                 }
+                // E. Reboot Drone with E
                 else if (hit.collider.GetComponent<CorpoDroneAI>() != null)
                 {
                     hit.collider.GetComponent<CorpoDroneAI>().RebootAndSendBack();
@@ -412,11 +557,11 @@ public class ARIEPlayerController : MonoBehaviour
                     UpdateHUD();
                     return;
                 }
+                // F. Optional Terminal to repair static barricades
                 else if (hit.collider.CompareTag("Terminal") || hit.collider.gameObject.name.Contains("Terminal"))
                 {
-                    Level3TreeDefense manager = FindFirstObjectByType<Level3TreeDefense>();
-                    if (manager != null)
-                        manager.RestoreAllBarricades();
+                    if (defenseManager != null)
+                        defenseManager.RestoreAllBarricades();
                     return;
                 }
             }
@@ -435,21 +580,34 @@ public class ARIEPlayerController : MonoBehaviour
         batteryLives--;
         if (batteryLives > 0)
         {
-            SceneManager.LoadScene(SceneManager.GetActiveScene().buildIndex);
+            // Respawn instantly at the active checkpoint instead of reloading scene!
+            CharacterController cc = GetComponent<CharacterController>();
+            if (cc != null) cc.enabled = false;
+
+            if (CheckPointManager.Instance != null)
+            {
+                transform.position = CheckPointManager.Instance.GetSpawnPosition();
+            }
+
+            if (cc != null) cc.enabled = true;
+
+            if (objectiveMessageText != null)
+                objectiveMessageText.text = $"BATTERY CRITICAL! Life lost. Remaining lives: {batteryLives}";
+
+            UpdateHUD();
         }
         else
         {
             batteryLives = 3;
-            RestartGame();
-        }
-    }
-
-    void LoadNextLevel()
-    {
-        int nextSceneIndex = SceneManager.GetActiveScene().buildIndex + 1;
-        if (nextSceneIndex < SceneManager.sceneCountInBuildSettings)
-        {
-            SceneManager.LoadScene(nextSceneIndex);
+            // Out of lives: Reset metrics and return to Start Menu
+            if (TryGetComponent<OneClickIndustrialHUD>(out var hudMgr))
+            {
+                hudMgr.OpenStartMenu();
+            }
+            else
+            {
+                SceneManager.LoadScene(SceneManager.GetActiveScene().buildIndex);
+            }
         }
     }
 
@@ -457,9 +615,9 @@ public class ARIEPlayerController : MonoBehaviour
     {
         if (hudText != null)
         {
+            string scannerStatus = hasSoilScanner ? "YES" : "NO";
             float co2Saved = totalScrapRecycled * 2.4f;
-            hudText.text = $"Lives: {batteryLives} | Scrap: {scrapCount}/3 | CO2 Saved: {co2Saved:F1}kg";
+            hudText.text = $"Lives: {batteryLives} | Scrap: {scrapCount} | Barriers [{keyPlaceBarrier}]: {barrierInventoryCount} | Scanner: {scannerStatus} | CO2: {co2Saved:F1}kg";
         }
     }
-
 }

@@ -4,6 +4,10 @@ using UnityEngine.SceneManagement;
 
 public class Level3TreeDefense : MonoBehaviour
 {
+    [Header("Seamless Map Trigger")]
+    [Tooltip("Keep FALSE for the connected map so the timer waits until you plant the sapling! Check TRUE only if testing Level 3 by itself.")]
+    public bool defenseStarted = false;
+
     [Header("Tree & Timer Settings")]
     public Transform growingTree;
     public float survivalTime = 60f;
@@ -34,17 +38,61 @@ public class Level3TreeDefense : MonoBehaviour
         breakdownTimer = breakdownInterval;
 
         if (growingTree != null)
+        {
             growingTree.localScale = startScale;
+            // Hide the tree at the start until the player plants the sapling in the fertile soil
+            if (!defenseStarted)
+                growingTree.gameObject.SetActive(false);
+        }
 
         if (ecoJet != null)
             ecoJet.SetActive(false);
 
+        if (!defenseStarted)
+        {
+            if (timerText != null)
+                timerText.text = "";
+            if (messageText != null)
+                messageText.text = "OBJECTIVE: Scavenge 3 Scrap & Power the Recycler to open the Scrapyard Door.";
+        }
+        else
+        {
+            if (messageText != null)
+                messageText.text = "PROTECT THE SAPLING! | Tree Health: 100%";
+        }
+    }
+
+    // Called automatically by ARIEPlayerController when the player plants the Sapling in fertile soil
+    public void StartDefenseEvent(Vector3 plantPosition)
+    {
+        if (defenseStarted) return;
+        defenseStarted = true;
+
+        if (growingTree != null)
+        {
+            growingTree.position = plantPosition;
+            growingTree.localScale = startScale;
+            growingTree.gameObject.SetActive(true);
+        }
+
+        // Command all CorpoDrones in the map to switch from Patrol Mode to Tree-Rush Mode
+        CorpoDroneAI[] drones = FindObjectsByType<CorpoDroneAI>(FindObjectsSortMode.None);
+        foreach (CorpoDroneAI drone in drones)
+        {
+            drone.attackTreeInLevel3 = true;
+            drone.targetTree = growingTree;
+            drone.level3Manager = this;
+        }
+
         if (messageText != null)
-            messageText.text = $"PROTECT THE SAPLING! | Tree Health: 100%";
+            messageText.text = "SAPLING PLANTED! Defend the Tree! (Press E on Drones to Reboot) | Tree HP: 100%";
     }
 
     void Update()
     {
+        // Wait until the sapling is planted before running the timer
+        if (!defenseStarted) return;
+
         if (isGameWon)
         {
             if (ecoJet != null && jetLandingSpot != null)
@@ -76,9 +124,9 @@ public class Level3TreeDefense : MonoBehaviour
             growingTree.localScale = Vector3.Lerp(startScale, fullGrownScale, growthProgress);
         }
 
-        // 3. Periodically drop a barricade so player must guard/repair
+        // 3. Periodically drop a static barricade (if any are assigned) so player must guard/repair
         breakdownTimer -= Time.deltaTime;
-        if (breakdownTimer <= 0f && barricades.Length > 0)
+        if (breakdownTimer <= 0f && barricades != null && barricades.Length > 0)
         {
             breakdownTimer = breakdownInterval;
             int randomIndex = Random.Range(0, barricades.Length);
@@ -99,9 +147,10 @@ public class Level3TreeDefense : MonoBehaviour
 
     public void DamageTree(float amount)
     {
-        if (isGameWon) return;
+        if (isGameWon || !defenseStarted) return;
 
         treeHealth -= amount * Time.deltaTime;
+
         if (messageText != null)
         {
             messageText.text = $"WARNING: DRONE DAMAGING TREE! (Press E on Drone to Reboot!) | Tree HP: {Mathf.CeilToInt(treeHealth)}%";
@@ -109,13 +158,15 @@ public class Level3TreeDefense : MonoBehaviour
 
         if (treeHealth <= 0f)
         {
-            Debug.Log("THE SAPLING WAS DESTROYED! Restarting Level 3...");
+            Debug.Log("THE SAPLING WAS DESTROYED! Restarting Mission...");
             SceneManager.LoadScene(SceneManager.GetActiveScene().buildIndex);
         }
     }
 
     public void RestoreAllBarricades()
     {
+        if (barricades == null) return;
+
         foreach (GameObject b in barricades)
         {
             if (b != null) b.SetActive(true);
