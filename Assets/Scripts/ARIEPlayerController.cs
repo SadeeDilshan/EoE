@@ -1,161 +1,632 @@
+using System.Collections.Generic;
 using UnityEngine;
-using TMPro;
 using UnityEngine.SceneManagement;
-using System;
+using TMPro;
 
-[RequireComponent(typeof(CharacterController))]
 public class ARIEPlayerController : MonoBehaviour
 {
-    [Header("Movement & Jump Settings")]
-    public float walkSpeed = 5f;
-    public float crouchSpeed = 2.5f;
-    public float jumpHeight = 1.5f;
+    [Header("Movement & Shift Sprint (5s Sprint / 3s Cooldown)")]
+    public float walkSpeed = 5.2f;
+    public float sprintSpeed = 9.5f;
+    public float crouchSpeed = 2.6f;
+    public float maxSprintDuration = 5.0f;
+    public float sprintCooldownDuration = 3.0f;
+    public float jumpHeight = 1.4f;
     public float gravity = -19.62f;
-
-    [Header("Stealth / Crouch Settings")]
-    public float normalHeight = 2.0f;
-    public float crouchHeight = 1.0f;
-    public bool isCrouching = false;
-
-    [Header("Camera Look Settings")]
     public Transform playerCamera;
-    public float mouseSensitivity = 2f;
-    private float xRotation = 0f;
+    public float mouseSensitivity = 2.0f;
 
-    [Header("Seamless Map Crafting & Inventory")]
-    public float interactRange = 4f;
+    [Header("Sprint Live Telemetry")]
+    public float currentSprintTime = 5.0f;
+    public float currentSprintCooldown = 0f;
+    public bool isSprintCoolingDown = false;
+    public bool IsCrouching { get; private set; }
+
+    [Header("Right-Click EMP Short-Circuit")]
+    public float empRange = 9.5f;
+
+    [Header("Free Fire Style 2-Click Barrier Placement")]
+    public GameObject barrierPrefab;
+    public float barrierPreviewDistance = 4.2f;
+    private bool isPreviewingBarrier = false;
+    private GameObject barrierGhostInstance;
+    private List<GameObject> placedBarriersSinceCheckpoint = new List<GameObject>();
+
+    [Header("Inventory & Progression State")]
     public int scrapCount = 0;
-    public int energyCells = 0;
-    public bool hasSapling = false;
-    public bool hasSoilScanner = false;
     public int barrierInventoryCount = 0;
+    public bool hasSoilScanner = false;
+    public bool hasSapling = false;
+    public bool isDoorPowered = false;
 
-    [Header("Map References & UI")]
-    public GameObject securityDoor;          // Drag Scrapyard Blast Door here
-    public GameObject barrierPrefab;         // Drag Barrier Prefab (with NavMeshObstacle) here
-    public Level3TreeDefense defenseManager; // Drag Level3Manager here
-    public TMP_Text hudText;                 // Top-left stats HUD
-    public TMP_Text objectiveMessageText;    // Drag MessageText here for live hints
+    public static int batteryLives = 3;
+    public static int totalScrapRecycled = 0;
+    public static int totalDronesRebooted = 0;
 
-    [Header("Pause Menu & Controls UI Panels")]
+    [Header("World References")]
+    public GameObject securityDoor;
+    public Level3TreeDefense defenseManager;
+    public TMP_Text objectiveMessageText;
     public GameObject pauseMenuPanel;
     public GameObject controlsMenuPanel;
-    public TMP_Text rebindStatusText;
-    private bool isPaused = false;
+    public TMP_Text jumpKeyText, crouchKeyText, sprintKeyText, interactKeyText, craftBarrierKeyText, placeBarrierKeyText;
 
-    [Header("Control Binding Button Texts (Optional)")]
-    public TMP_Text forwardKeyText;
-    public TMP_Text backwardKeyText;
-    public TMP_Text leftKeyText;
-    public TMP_Text rightKeyText;
-    public TMP_Text jumpKeyText;
-    public TMP_Text crouchKeyText;
-    public TMP_Text interactKeyText;
-    public TMP_Text craftBarrierKeyText;
-    public TMP_Text placeBarrierKeyText;
-
-    [Header("Customizable Controls (Saved in PlayerPrefs)")]
+    [Header("Remappable Keybinds & UI Texts")]
     public static KeyCode keyForward = KeyCode.W;
     public static KeyCode keyBackward = KeyCode.S;
     public static KeyCode keyLeft = KeyCode.A;
     public static KeyCode keyRight = KeyCode.D;
     public static KeyCode keyJump = KeyCode.Space;
     public static KeyCode keyCrouch = KeyCode.C;
+    public static KeyCode keySprint = KeyCode.LeftShift;
     public static KeyCode keyInteract = KeyCode.E;
     public static KeyCode keyCraftBarrier = KeyCode.Q;
-    public static KeyCode keyPlaceBarrier = KeyCode.F;
+    public static KeyCode keyPlaceBarrier = KeyCode.Mouse0; // Left Click!
 
-    private string waitingForKeyAction = "";
-
-    [Header("Global Circular Economy Metrics")]
-    public static int batteryLives = 3;
-    public static int totalScrapRecycled = 0;
-    public static int totalDronesRebooted = 0;
+    public TMP_Text rebindStatusText;
+    public TMP_Text forwardKeyText, backwardKeyText, leftKeyText, rightKeyText;
 
     private CharacterController controller;
     private Vector3 velocity;
+    private float xRotation = 0f;
+    private float groundedGraceTimer = 0f; // Ensures reliable jumping even when 100% idle!
+    private bool isPaused = false;
+    private string waitingForKeyAction = "";
 
     void Start()
     {
         controller = GetComponent<CharacterController>();
-
-        if (playerCamera == null && Camera.main != null)
-            playerCamera = Camera.main.transform;
-
-        if (defenseManager == null)
-            defenseManager = FindFirstObjectByType<Level3TreeDefense>();
-
-        // Auto-find UI panels if left unassigned in Inspector
-        if (pauseMenuPanel == null)
-            pauseMenuPanel = GameObject.Find("PauseMenuPanel");
-        if (controlsMenuPanel == null)
-            controlsMenuPanel = GameObject.Find("ControlsMenuPanel");
-
-        LoadSavedControlsAndStats();
-
-        Time.timeScale = 1f;
-        LockCursor(true);
-
-        if (pauseMenuPanel != null) pauseMenuPanel.SetActive(false);
-        if (controlsMenuPanel != null) controlsMenuPanel.SetActive(false);
-
-        UpdateHUD();
-        UpdateKeyUI();
+        if (controller != null)
+        {
+            // Setting minMoveDistance to 0 prevents CharacterController from ignoring idle vertical steps!
+            controller.minMoveDistance = 0f;
+        }
+        currentSprintTime = maxSprintDuration;
+        LoadSavedControls();
+        UpdateControlsUI();
     }
 
     void Update()
     {
-        // 1. Listen for new key press if rebinding controls
         if (!string.IsNullOrEmpty(waitingForKeyAction))
         {
             ListenForKeyRebind();
             return;
         }
 
-        // 2. Toggle Pause Menu with ESC
         if (Input.GetKeyDown(KeyCode.Escape))
         {
-            if (isPaused)
-                ResumeGame();
-            else
-                PauseGame();
+            if (isPreviewingBarrier)
+            {
+                CancelBarrierPreview();
+                return;
+            }
+            if (isPaused) ResumeGame();
+            else PauseGame();
         }
 
-        if (isPaused) return;
+        if (isPaused || Time.timeScale == 0f) return;
 
         HandleMouseLook();
-        HandleMovementJumpAndCrouch();
-        HandleBarrierPlacement();
-        HandleInteraction();
+        HandleMovementAndSprint();
+        HandleFreeFireBarrierPlacement();
+        HandleRightClickEMP();
+        HandleInteractions();
     }
 
-    // ==================== PAUSE MENU BUTTON FUNCTIONS ====================
+    // ==================== 1. MOVEMENT, IDLE JUMP + 5s SHIFT SPRINT ====================
+
+    bool CheckIsGroundedReliable()
+    {
+        if (controller == null) return false;
+        if (controller.isGrounded) return true;
+
+        // Secondary sphere check at the bottom of the CharacterController so standing still on uneven terrain still registers grounded!
+        Vector3 bottomSpherePos = transform.position + controller.center - Vector3.up * (controller.height * 0.5f - controller.radius + 0.08f);
+        Collider[] hits = Physics.OverlapSphere(bottomSpherePos, controller.radius * 0.95f, ~0, QueryTriggerInteraction.Ignore);
+        foreach (Collider col in hits)
+        {
+            if (col != null && col.transform != transform && !col.transform.IsChildOf(transform))
+            {
+                if (barrierGhostInstance != null && col.transform.IsChildOf(barrierGhostInstance.transform))
+                    continue;
+                return true;
+            }
+        }
+        return false;
+    }
+
+    void HandleMovementAndSprint()
+    {
+        if (controller == null || !controller.enabled) return;
+
+        bool groundedNow = CheckIsGroundedReliable();
+        if (groundedNow)
+        {
+            groundedGraceTimer = 0.15f; // 0.15s grace window guarantees instant jumping from idle
+            if (velocity.y < 0f)
+                velocity.y = -2.5f;
+        }
+        else
+        {
+            groundedGraceTimer -= Time.deltaTime;
+        }
+
+        if (Input.GetKeyDown(keyCrouch))
+        {
+            IsCrouching = !IsCrouching;
+            controller.height = IsCrouching ? 1.1f : 2.0f;
+        }
+
+        float moveX = 0f, moveZ = 0f;
+        if (Input.GetKey(keyForward)) moveZ += 1f;
+        if (Input.GetKey(keyBackward)) moveZ -= 1f;
+        if (Input.GetKey(keyRight)) moveX += 1f;
+        if (Input.GetKey(keyLeft)) moveX -= 1f;
+
+        Vector3 move = (transform.right * moveX + transform.forward * moveZ).normalized;
+        bool isMoving = move.sqrMagnitude > 0.01f;
+
+        // Shift Sprint Logic: Sprints up to 5 seconds, then cools down for 3 seconds
+        bool wantsToSprint = Input.GetKey(keySprint) && isMoving && !IsCrouching;
+        bool isSprinting = false;
+
+        if (isSprintCoolingDown)
+        {
+            currentSprintCooldown -= Time.deltaTime;
+            if (currentSprintCooldown <= 0f)
+            {
+                isSprintCoolingDown = false;
+                currentSprintTime = maxSprintDuration;
+            }
+        }
+        else if (wantsToSprint && currentSprintTime > 0f)
+        {
+            isSprinting = true;
+            currentSprintTime -= Time.deltaTime;
+            if (currentSprintTime <= 0f)
+            {
+                currentSprintTime = 0f;
+                isSprintCoolingDown = true;
+                currentSprintCooldown = sprintCooldownDuration;
+                ShowPrompt("SPRINT DEPLETED! Recharging servos (3s)...");
+            }
+        }
+        else if (currentSprintTime < maxSprintDuration)
+        {
+            currentSprintCooldown += Time.deltaTime;
+            if (currentSprintCooldown >= sprintCooldownDuration)
+            {
+                currentSprintTime = maxSprintDuration;
+                currentSprintCooldown = 0f;
+            }
+        }
+
+        // Jump works both while walking AND while 100% idle!
+        if (Input.GetKeyDown(keyJump) && groundedGraceTimer > 0f)
+        {
+            velocity.y = Mathf.Sqrt(jumpHeight * -2f * gravity);
+            groundedGraceTimer = 0f;
+        }
+
+        velocity.y += gravity * Time.deltaTime;
+
+        // Combine horizontal + vertical velocity into a SINGLE Move() call so CharacterController never stalls while idle!
+        float activeSpeed = IsCrouching ? crouchSpeed : (isSprinting ? sprintSpeed : walkSpeed);
+        Vector3 finalDisplacement = (move * activeSpeed) + new Vector3(0f, velocity.y, 0f);
+        controller.Move(finalDisplacement * Time.deltaTime);
+    }
+
+    void HandleMouseLook()
+    {
+        float mouseX = Input.GetAxis("Mouse X") * mouseSensitivity;
+        float mouseY = Input.GetAxis("Mouse Y") * mouseSensitivity;
+
+        xRotation -= mouseY;
+        xRotation = Mathf.Clamp(xRotation, -80f, 80f);
+
+        if (playerCamera != null)
+            playerCamera.localRotation = Quaternion.Euler(xRotation, 0f, 0f);
+
+        transform.Rotate(Vector3.up * mouseX);
+    }
+
+    // ==================== 2. FREE FIRE 2-CLICK GLOO-WALL BARRIER PLACEMENT (WORKS IN IDLE & MOVING) ====================
+
+    void HandleFreeFireBarrierPlacement()
+    {
+        bool placePressed = Input.GetKeyDown(keyPlaceBarrier) || (keyPlaceBarrier == KeyCode.Mouse0 && Input.GetMouseButtonDown(0));
+
+        if (isPreviewingBarrier)
+        {
+            // Continuously update wall hologram position/rotation even when standing completely still!
+            UpdateBarrierGhostTransform();
+
+            // 2nd Click: Deploy real barrier at the illusion's exact position
+            if (placePressed)
+            {
+                ConfirmDeployBarrier();
+                return;
+            }
+
+            // Right-Click cancels the wall preview
+            if (Input.GetMouseButtonDown(1))
+            {
+                CancelBarrierPreview();
+                ShowPrompt("Barrier placement preview cancelled.");
+                return;
+            }
+        }
+        else
+        {
+            // 1st Click: Spawn the Free Fire style translucent wall illusion (works while idle or moving!)
+            if (placePressed)
+            {
+                if (barrierInventoryCount > 0 && barrierPrefab != null)
+                {
+                    StartBarrierPreview();
+                }
+            }
+        }
+    }
+
+    void StartBarrierPreview()
+    {
+        isPreviewingBarrier = true;
+        barrierGhostInstance = Instantiate(barrierPrefab);
+        barrierGhostInstance.name = "Barrier_Holo_Illusion";
+        barrierGhostInstance.SetActive(true);
+
+        // Disable colliders & NavMeshObstacle on the illusion so it never collides with the player or raycasts
+        foreach (Collider c in barrierGhostInstance.GetComponentsInChildren<Collider>())
+            c.enabled = false;
+        foreach (UnityEngine.AI.NavMeshObstacle obs in barrierGhostInstance.GetComponentsInChildren<UnityEngine.AI.NavMeshObstacle>())
+            obs.enabled = false;
+
+        // Apply glowing translucent Cyan Free Fire Gloo-Wall preview shader
+        Shader holoShader = Shader.Find("Sprites/Default");
+        if (holoShader == null) holoShader = Shader.Find("Universal Render Pipeline/Unlit");
+        Material ghostMat = new Material(holoShader);
+        Color cyanIllusion = new Color(0.15f, 0.95f, 1.0f, 0.45f);
+        ghostMat.color = cyanIllusion;
+        if (ghostMat.HasProperty("_BaseColor")) ghostMat.SetColor("_BaseColor", cyanIllusion);
+
+        foreach (MeshRenderer mr in barrierGhostInstance.GetComponentsInChildren<MeshRenderer>())
+        {
+            mr.enabled = true;
+            Material[] mats = new Material[mr.sharedMaterials.Length];
+            for (int i = 0; i < mats.Length; i++) mats[i] = ghostMat;
+            mr.sharedMaterials = mats;
+        }
+
+        UpdateBarrierGhostTransform();
+        ShowPrompt("WALL PREVIEW ACTIVE: Left-Click again to deploy wall, or Right-Click to cancel.");
+    }
+
+    void UpdateBarrierGhostTransform()
+    {
+        if (barrierGhostInstance == null) return;
+
+        Transform cam = playerCamera != null ? playerCamera : transform;
+        Vector3 forwardFlat = new Vector3(transform.forward.x, 0f, transform.forward.z);
+        if (forwardFlat.sqrMagnitude < 0.001f) forwardFlat = Vector3.forward;
+        forwardFlat.Normalize();
+
+        // Default preview point 4.2m directly in front of player
+        Vector3 targetPos = transform.position + forwardFlat * barrierPreviewDistance;
+
+        // Raycast from camera, explicitly IGNORING the Player's own CharacterController and Trigger colliders!
+        RaycastHit[] camHits = Physics.RaycastAll(cam.position, cam.forward, barrierPreviewDistance + 2.5f, ~0, QueryTriggerInteraction.Ignore);
+        float closestDist = float.MaxValue;
+        bool foundAimSurface = false;
+
+        foreach (RaycastHit h in camHits)
+        {
+            if (h.transform == transform || h.transform.IsChildOf(transform)) continue;
+            if (barrierGhostInstance != null && h.transform.IsChildOf(barrierGhostInstance.transform)) continue;
+            // Ignore hitting minimum close range (< 1.2m) so wall never spawns inside player's face while idle
+            if (h.distance < 1.2f) continue;
+
+            if (h.distance < closestDist)
+            {
+                closestDist = h.distance;
+                targetPos = h.point;
+                foundAimSurface = true;
+            }
+        }
+
+        // If looking straight ahead/up into the air while idle, snap the bottom of the wall cleanly to the terrain below!
+        if (!foundAimSurface)
+        {
+            RaycastHit[] groundHits = Physics.RaycastAll(targetPos + Vector3.up * 8f, Vector3.down, 25f, ~0, QueryTriggerInteraction.Ignore);
+            float highestGroundY = transform.position.y;
+            bool foundGround = false;
+
+            foreach (RaycastHit gh in groundHits)
+            {
+                if (gh.transform == transform || gh.transform.IsChildOf(transform)) continue;
+                if (barrierGhostInstance != null && gh.transform.IsChildOf(barrierGhostInstance.transform)) continue;
+
+                if (!foundGround || gh.point.y > highestGroundY)
+                {
+                    highestGroundY = gh.point.y;
+                    foundGround = true;
+                }
+            }
+
+            if (foundGround)
+                targetPos.y = highestGroundY;
+        }
+
+        barrierGhostInstance.transform.position = targetPos;
+        barrierGhostInstance.transform.rotation = Quaternion.LookRotation(forwardFlat, Vector3.up);
+    }
+
+    void ConfirmDeployBarrier()
+    {
+        if (barrierGhostInstance == null) return;
+
+        Vector3 deployPos = barrierGhostInstance.transform.position;
+        Quaternion deployRot = barrierGhostInstance.transform.rotation;
+
+        Destroy(barrierGhostInstance);
+        isPreviewingBarrier = false;
+
+        GameObject realWall = Instantiate(barrierPrefab, deployPos, deployRot);
+        placedBarriersSinceCheckpoint.Add(realWall);
+        barrierInventoryCount--;
+
+        ShowPrompt($"SCRAP BARRIER DEPLOYED! Remaining Barriers: {barrierInventoryCount}");
+    }
+
+    void CancelBarrierPreview()
+    {
+        if (barrierGhostInstance != null) Destroy(barrierGhostInstance);
+        isPreviewingBarrier = false;
+    }
+
+    public void ClearPlacedBarriersSinceCheckpoint()
+    {
+        CancelBarrierPreview();
+        foreach (GameObject b in placedBarriersSinceCheckpoint)
+        {
+            if (b != null) Destroy(b);
+        }
+        placedBarriersSinceCheckpoint.Clear();
+    }
+
+    // ==================== 3. RIGHT-CLICK EMP SHORT-CIRCUIT DRONES ====================
+
+    void HandleRightClickEMP()
+    {
+        if (isPreviewingBarrier) return; // Right-click cancels preview if holding wall illusion
+
+        if (Input.GetMouseButtonDown(1))
+        {
+            Transform cam = playerCamera != null ? playerCamera : transform;
+            CorpoDroneAI targetDrone = null;
+
+            RaycastHit[] hits = Physics.RaycastAll(cam.position, cam.forward, empRange, ~0, QueryTriggerInteraction.Ignore);
+            foreach (RaycastHit hit in hits)
+            {
+                if (hit.transform == transform || hit.transform.IsChildOf(transform)) continue;
+                CorpoDroneAI d = hit.collider.GetComponentInParent<CorpoDroneAI>();
+                if (d != null && !d.isShortCircuited)
+                {
+                    targetDrone = d;
+                    break;
+                }
+            }
+
+            if (targetDrone == null)
+            {
+                CorpoDroneAI[] allDrones = FindObjectsByType<CorpoDroneAI>(FindObjectsSortMode.None);
+                float bestAngle = 35f;
+                foreach (CorpoDroneAI d in allDrones)
+                {
+                    if (d == null || d.isShortCircuited) continue;
+                    float dist = Vector3.Distance(transform.position, d.transform.position);
+                    if (dist <= empRange)
+                    {
+                        float ang = Vector3.Angle(cam.forward, (d.transform.position - cam.position).normalized);
+                        if (ang < bestAngle)
+                        {
+                            bestAngle = ang;
+                            targetDrone = d;
+                        }
+                    }
+                }
+            }
+
+            if (targetDrone != null)
+            {
+                targetDrone.ShortCircuitEMP();
+                ShowPrompt("EMP PULSE FIRED [RIGHT-CLICK]: Corpo-Drone short-circuited & rebooting!");
+            }
+            else
+            {
+                ShowPrompt("EMP PULSE: No active Corpo-Drone within 9m range.");
+            }
+        }
+    }
+
+    // ==================== 4. SCAVENGING, RECYCLER & SOIL INTERACTIONS ====================
+
+    void HandleInteractions()
+    {
+        Collider[] hits = Physics.OverlapSphere(transform.position, 3.2f);
+        foreach (Collider col in hits)
+        {
+            if (col == null) continue;
+            GameObject obj = col.gameObject;
+
+            // Collect Scrap
+            if (obj.CompareTag("Scrap") || obj.name.Contains("Scrap_"))
+            {
+                if (Input.GetKeyDown(keyInteract))
+                {
+                    scrapCount++;
+                    obj.SetActive(false);
+                    ShowPrompt($"Picked up E-Waste Scrap! Total Scrap: {scrapCount}");
+                    return;
+                }
+            }
+
+            // Collect Cryo-Sapling
+            if (obj.CompareTag("Sapling") || obj.name == "Sapling")
+            {
+                if (Input.GetKeyDown(keyInteract))
+                {
+                    hasSapling = true;
+                    obj.SetActive(false);
+                    ShowPrompt("CRYO-SAPLING ACQUIRED! Exit the Cave and craft a Soil Scanner [E] or Barriers [Q].");
+                    return;
+                }
+            }
+
+            // Master Recycler ([E] for Door/Scanner, [Q] for Scrap Barrier)
+            if (obj.CompareTag("Recycler") || obj.name == "Recycler")
+            {
+                if (Input.GetKeyDown(keyInteract))
+                {
+                    if (!isDoorPowered)
+                    {
+                        if (scrapCount >= 3)
+                        {
+                            scrapCount -= 3;
+                            totalScrapRecycled += 3;
+                            isDoorPowered = true;
+                            if (securityDoor != null) securityDoor.SetActive(false);
+                            if (CheckpointManager.Instance != null) CheckpointManager.Instance.SaveCheckpointState(transform, this);
+                            ShowPrompt("BLAST DOOR UNLOCKED! Enter the North Rock Cave to rescue the Sapling.");
+                        }
+                        else ShowPrompt($"Need 3 Scrap to power the Blast Door (Have: {scrapCount}/3).");
+                    }
+                    else if (!hasSoilScanner)
+                    {
+                        if (scrapCount >= 3)
+                        {
+                            scrapCount -= 3;
+                            totalScrapRecycled += 3;
+                            hasSoilScanner = true;
+                            ShowPrompt("SOIL SCANNER ONLINE! Craft Barriers with [Q] (2 Scrap) and Left-Click to preview/place.");
+                        }
+                        else ShowPrompt($"Need 3 Scrap to craft the Soil Scanner (Have: {scrapCount}/3).");
+                    }
+                    else ShowPrompt("Soil Scanner already active! Press [Q] at Recycler to craft Barriers (2 Scrap).");
+                    return;
+                }
+
+                if (Input.GetKeyDown(keyCraftBarrier))
+                {
+                    if (scrapCount >= 2)
+                    {
+                        scrapCount -= 2;
+                        totalScrapRecycled += 2;
+                        barrierInventoryCount++;
+                        ShowPrompt($"CRAFTED SCRAP BARRIER! Left-Click once to preview illusion, Left-Click again to place (Have: {barrierInventoryCount}).");
+                    }
+                    else ShowPrompt($"Need 2 Scrap to craft a Scrap Barrier (Have: {scrapCount}/2).");
+                    return;
+                }
+            }
+
+            // Soil Patch Scanning & Sapling Planting
+            SoilPatchSlot patch = col.GetComponent<SoilPatchSlot>();
+            if (patch != null && Input.GetKeyDown(keyInteract))
+            {
+                if (!hasSoilScanner)
+                {
+                    ShowPrompt("SOIL UNKNOWN! Craft the Soil Scanner at the Recycler first.");
+                    return;
+                }
+
+                if (!patch.isScanned)
+                {
+                    patch.isScanned = true;
+                    MeshRenderer mr = patch.GetComponent<MeshRenderer>();
+                    if (mr != null)
+                    {
+                        if (patch.isFertile && patch.scannedGoodMat != null)
+                            mr.sharedMaterial = patch.scannedGoodMat;
+                        else if (!patch.isFertile && patch.scannedBadMat != null)
+                            mr.sharedMaterial = patch.scannedBadMat;
+                    }
+
+                    if (patch.isFertile)
+                        ShowPrompt("SCAN RESULT: FERTILE BIO-SOIL! Press [E] again to plant the Sapling (Place barriers with Left-Click first!).");
+                    else
+                        ShowPrompt("SCAN RESULT: TOXIC HEAVY-METAL SLUDGE! Search another valley.");
+                }
+                else if (patch.isFertile)
+                {
+                    if (hasSapling)
+                    {
+                        hasSapling = false;
+                        placedBarriersSinceCheckpoint.Clear();
+                        if (defenseManager != null)
+                            defenseManager.StartDefenseSequence();
+                        ShowPrompt("SAPLING PLANTED! Use Left-Click to place barriers & Right-Click to short-circuit rushing drones!");
+                    }
+                    else ShowPrompt("Retrieve the Cryo-Sapling from the Rock Cave first!");
+                }
+                return;
+            }
+        }
+    }
+
+    // ==================== 5. CHECKPOINT RESPAWN & PAUSE MENU ACTIONS ====================
+
+    public void LoseBatteryLife()
+    {
+        CancelBarrierPreview();
+        batteryLives--;
+
+        if (batteryLives > 0)
+        {
+            if (CheckpointManager.Instance != null)
+                CheckpointManager.Instance.RestorePlayerToCheckpoint(this);
+
+            ShowPrompt($"DETECTED BY CORPO-DRONE! Respawned at Checkpoint with saved loot. Lives: {batteryLives}/3");
+        }
+        else
+        {
+            batteryLives = 3;
+            RestartGame();
+        }
+    }
 
     public void PauseGame()
     {
         isPaused = true;
         Time.timeScale = 0f;
-        LockCursor(false);
-
+        Cursor.lockState = CursorLockMode.None;
+        Cursor.visible = true;
         if (pauseMenuPanel != null) pauseMenuPanel.SetActive(true);
-        if (controlsMenuPanel != null) controlsMenuPanel.SetActive(false);
     }
 
     public void ResumeGame()
     {
         isPaused = false;
-        waitingForKeyAction = "";
         Time.timeScale = 1f;
-        LockCursor(true);
-
+        Cursor.lockState = CursorLockMode.Locked;
+        Cursor.visible = false;
         if (pauseMenuPanel != null) pauseMenuPanel.SetActive(false);
         if (controlsMenuPanel != null) controlsMenuPanel.SetActive(false);
     }
 
     public void RestartMission()
     {
-        Time.timeScale = 1f;
-        SceneManager.LoadScene(SceneManager.GetActiveScene().buildIndex);
+        ResumeGame();
+        if (CheckpointManager.Instance != null && CheckpointManager.Instance.savedState.hasSnapshot)
+        {
+            CheckpointManager.Instance.RestorePlayerToCheckpoint(this);
+            ShowPrompt("MISSION RESTARTED AT CHECKPOINT: Inventory & Loot restored!");
+        }
+        else
+        {
+            SceneManager.LoadScene(SceneManager.GetActiveScene().buildIndex);
+        }
     }
 
     public void RestartGame()
@@ -164,21 +635,21 @@ public class ARIEPlayerController : MonoBehaviour
         batteryLives = 3;
         totalScrapRecycled = 0;
         totalDronesRebooted = 0;
-        SaveProgress();
-
-        if (Application.CanStreamedLevelBeLoaded("Level1"))
-            SceneManager.LoadScene("Level1");
-        else
-            SceneManager.LoadScene(0);
+        SceneManager.LoadScene(SceneManager.GetActiveScene().buildIndex);
     }
+
+    public void QuitGame()
+    {
+        Application.Quit();
+    }
+
+    // ==================== KEY REBINDING SYSTEM ====================
 
     public void OpenChangeControlsMenu()
     {
         if (pauseMenuPanel != null) pauseMenuPanel.SetActive(false);
         if (controlsMenuPanel != null) controlsMenuPanel.SetActive(true);
-        UpdateKeyUI();
-        if (rebindStatusText != null)
-            rebindStatusText.text = "Click a control below to change its key";
+        UpdateControlsUI();
     }
 
     public void CloseChangeControlsMenu()
@@ -188,94 +659,70 @@ public class ARIEPlayerController : MonoBehaviour
         if (pauseMenuPanel != null) pauseMenuPanel.SetActive(true);
     }
 
-    public void QuitGame()
-    {
-        Time.timeScale = 1f;
-        Debug.Log("Quitting Game...");
-        Application.Quit();
-    }
-
-    // ==================== KEY REMAPPING SYSTEM ====================
-
     public void StartRebindingKey(string actionName)
     {
         waitingForKeyAction = actionName;
         if (rebindStatusText != null)
-            rebindStatusText.text = $"Press any key for [{actionName}]... (Press ESC to cancel)";
+            rebindStatusText.text = $"Press any key/mouse button for [{actionName}] (ESC to cancel)...";
     }
 
     void ListenForKeyRebind()
     {
         if (!Input.anyKeyDown) return;
 
-        foreach (KeyCode kcode in Enum.GetValues(typeof(KeyCode)))
+        if (Input.GetKeyDown(KeyCode.Escape))
         {
-            if (Input.GetKeyDown(kcode))
+            waitingForKeyAction = "";
+            if (rebindStatusText != null) rebindStatusText.text = "Rebind cancelled.";
+            return;
+        }
+
+        foreach (KeyCode k in System.Enum.GetValues(typeof(KeyCode)))
+        {
+            if (Input.GetKeyDown(k))
             {
-                if (kcode == KeyCode.Mouse0) continue;
-
-                if (kcode == KeyCode.Escape)
-                {
-                    waitingForKeyAction = "";
-                    if (rebindStatusText != null) rebindStatusText.text = "Rebind cancelled.";
-                    return;
-                }
-
-                switch (waitingForKeyAction)
-                {
-                    case "Forward": keyForward = kcode; break;
-                    case "Backward": keyBackward = kcode; break;
-                    case "Left": keyLeft = kcode; break;
-                    case "Right": keyRight = kcode; break;
-                    case "Jump": keyJump = kcode; break;
-                    case "Crouch": keyCrouch = kcode; break;
-                    case "Interact": keyInteract = kcode; break;
-                    case "CraftBarrier": keyCraftBarrier = kcode; break;
-                    case "PlaceBarrier": keyPlaceBarrier = kcode; break;
-                }
-
-                PlayerPrefs.SetString("Key_" + waitingForKeyAction, kcode.ToString());
+                AssignKey(waitingForKeyAction, k);
+                PlayerPrefs.SetString("Key_" + waitingForKeyAction, k.ToString());
                 PlayerPrefs.Save();
-
-                if (rebindStatusText != null)
-                    rebindStatusText.text = $"{waitingForKeyAction} bound to [{kcode}]!";
-
                 waitingForKeyAction = "";
-                UpdateKeyUI();
+                UpdateControlsUI();
+                if (rebindStatusText != null) rebindStatusText.text = $"Bound to [{k}]!";
                 break;
             }
         }
     }
 
-    public void ResetDefaultControls()
+    void AssignKey(string action, KeyCode k)
     {
-        keyForward = KeyCode.W;
-        keyBackward = KeyCode.S;
-        keyLeft = KeyCode.A;
-        keyRight = KeyCode.D;
-        keyJump = KeyCode.Space;
-        keyCrouch = KeyCode.C;
-        keyInteract = KeyCode.E;
-        keyCraftBarrier = KeyCode.Q;
-        keyPlaceBarrier = KeyCode.F;
-
-        PlayerPrefs.SetString("Key_Forward", keyForward.ToString());
-        PlayerPrefs.SetString("Key_Backward", keyBackward.ToString());
-        PlayerPrefs.SetString("Key_Left", keyLeft.ToString());
-        PlayerPrefs.SetString("Key_Right", keyRight.ToString());
-        PlayerPrefs.SetString("Key_Jump", keyJump.ToString());
-        PlayerPrefs.SetString("Key_Crouch", keyCrouch.ToString());
-        PlayerPrefs.SetString("Key_Interact", keyInteract.ToString());
-        PlayerPrefs.SetString("Key_CraftBarrier", keyCraftBarrier.ToString());
-        PlayerPrefs.SetString("Key_PlaceBarrier", keyPlaceBarrier.ToString());
-        PlayerPrefs.Save();
-
-        UpdateKeyUI();
-        if (rebindStatusText != null)
-            rebindStatusText.text = "Controls reset to defaults!";
+        switch (action)
+        {
+            case "Forward": keyForward = k; break;
+            case "Backward": keyBackward = k; break;
+            case "Left": keyLeft = k; break;
+            case "Right": keyRight = k; break;
+            case "Jump": keyJump = k; break;
+            case "Crouch": keyCrouch = k; break;
+            case "Interact": keyInteract = k; break;
+            case "CraftBarrier": keyCraftBarrier = k; break;
+            case "PlaceBarrier": keyPlaceBarrier = k; break;
+            case "Sprint": keySprint = k; break;
+        }
     }
 
-    void UpdateKeyUI()
+    public void ResetDefaultControls()
+    {
+        keyForward = KeyCode.W; keyBackward = KeyCode.S; keyLeft = KeyCode.A; keyRight = KeyCode.D;
+        keyJump = KeyCode.Space; keyCrouch = KeyCode.C; keySprint = KeyCode.LeftShift;
+        keyInteract = KeyCode.E; keyCraftBarrier = KeyCode.Q; keyPlaceBarrier = KeyCode.Mouse0;
+        UpdateControlsUI();
+    }
+
+    void LoadSavedControls()
+    {
+        keyPlaceBarrier = KeyCode.Mouse0;
+    }
+
+    void UpdateControlsUI()
     {
         if (forwardKeyText != null) forwardKeyText.text = $"Forward: {keyForward}";
         if (backwardKeyText != null) backwardKeyText.text = $"Backward: {keyBackward}";
@@ -285,339 +732,15 @@ public class ARIEPlayerController : MonoBehaviour
         if (crouchKeyText != null) crouchKeyText.text = $"Crouch: {keyCrouch}";
         if (interactKeyText != null) interactKeyText.text = $"Interact: {keyInteract}";
         if (craftBarrierKeyText != null) craftBarrierKeyText.text = $"Craft Barrier: {keyCraftBarrier}";
-        if (placeBarrierKeyText != null) placeBarrierKeyText.text = $"Place Barrier: {keyPlaceBarrier}";
+        if (placeBarrierKeyText != null) placeBarrierKeyText.text = $"Place Wall (2-Click): {keyPlaceBarrier}";
+        if (sprintKeyText != null) sprintKeyText.text = $"Servo Sprint (5s): {keySprint}";
     }
 
-    void LoadSavedControlsAndStats()
+    public void ShowPrompt(string msg)
     {
-        totalScrapRecycled = PlayerPrefs.GetInt("SavedScrapRecycled", totalScrapRecycled);
-        totalDronesRebooted = PlayerPrefs.GetInt("SavedDronesRebooted", totalDronesRebooted);
-
-        keyForward = ParseKey("Key_Forward", KeyCode.W);
-        keyBackward = ParseKey("Key_Backward", KeyCode.S);
-        keyLeft = ParseKey("Key_Left", KeyCode.A);
-        keyRight = ParseKey("Key_Right", KeyCode.D);
-        keyJump = ParseKey("Key_Jump", KeyCode.Space);
-        keyCrouch = ParseKey("Key_Crouch", KeyCode.C);
-        keyInteract = ParseKey("Key_Interact", KeyCode.E);
-        keyCraftBarrier = ParseKey("Key_CraftBarrier", KeyCode.Q);
-        keyPlaceBarrier = ParseKey("Key_PlaceBarrier", KeyCode.F);
+        if (objectiveMessageText != null)
+            objectiveMessageText.text = msg;
     }
 
-    KeyCode ParseKey(string prefKey, KeyCode defaultKey)
-    {
-        string saved = PlayerPrefs.GetString(prefKey, defaultKey.ToString());
-        if (Enum.TryParse(saved, out KeyCode parsed))
-            return parsed;
-        return defaultKey;
-    }
-
-    // ==================== PLAYER MOVEMENT & BARRIER PLACEMENT ====================
-
-    void LockCursor(bool locked)
-    {
-        Cursor.lockState = locked ? CursorLockMode.Locked : CursorLockMode.None;
-        Cursor.visible = !locked;
-    }
-
-    void HandleMouseLook()
-    {
-        if (playerCamera == null) return;
-
-        float mouseX = Input.GetAxis("Mouse X") * mouseSensitivity;
-        float mouseY = Input.GetAxis("Mouse Y") * mouseSensitivity;
-
-        xRotation -= mouseY;
-        xRotation = Mathf.Clamp(xRotation, -85f, 85f);
-
-        playerCamera.localRotation = Quaternion.Euler(xRotation, 0f, 0f);
-        transform.Rotate(Vector3.up * mouseX);
-    }
-
-    void HandleMovementJumpAndCrouch()
-    {
-        bool isGrounded = controller.isGrounded;
-        if (isGrounded && velocity.y < 0)
-            velocity.y = -2f;
-
-        if (Input.GetKeyDown(keyCrouch))
-        {
-            isCrouching = !isCrouching;
-            controller.height = isCrouching ? crouchHeight : normalHeight;
-            if (playerCamera != null)
-                playerCamera.localPosition = new Vector3(0f, isCrouching ? 0.3f : 0.6f, 0f);
-        }
-
-        float x = 0f, z = 0f;
-        if (Input.GetKey(keyForward)) z += 1f;
-        if (Input.GetKey(keyBackward)) z -= 1f;
-        if (Input.GetKey(keyRight)) x += 1f;
-        if (Input.GetKey(keyLeft)) x -= 1f;
-
-        float currentSpeed = isCrouching ? crouchSpeed : walkSpeed;
-        Vector3 horizontalMove = (transform.right * x + transform.forward * z).normalized * currentSpeed;
-
-        if (Input.GetKeyDown(keyJump) && isGrounded)
-        {
-            if (isCrouching)
-            {
-                isCrouching = false;
-                controller.height = normalHeight;
-                if (playerCamera != null)
-                    playerCamera.localPosition = new Vector3(0f, 0.6f, 0f);
-            }
-            velocity.y = Mathf.Sqrt(jumpHeight * -2f * gravity);
-        }
-
-        velocity.y += gravity * Time.deltaTime;
-        Vector3 finalMovement = horizontalMove + new Vector3(0f, velocity.y, 0f);
-        controller.Move(finalMovement * Time.deltaTime);
-    }
-
-    void HandleBarrierPlacement()
-    {
-        // Press F (or custom keyPlaceBarrier) to deploy a crafted Barrier in front of AR-IE
-        if (Input.GetKeyDown(keyPlaceBarrier))
-        {
-            if (barrierInventoryCount > 0 && barrierPrefab != null)
-            {
-                Vector3 spawnPos = transform.position + transform.forward * 2.5f;
-                spawnPos.y = transform.position.y;
-                Quaternion spawnRot = Quaternion.Euler(0f, transform.eulerAngles.y, 0f);
-
-                Instantiate(barrierPrefab, spawnPos, spawnRot);
-                barrierInventoryCount--;
-                UpdateHUD();
-
-                if (objectiveMessageText != null)
-                    objectiveMessageText.text = $"Scrap Barrier Deployed! ({barrierInventoryCount} left in inventory)";
-            }
-            else if (barrierInventoryCount <= 0 && objectiveMessageText != null)
-            {
-                objectiveMessageText.text = $"No Barriers in inventory! Return to Recycler with 2 Scrap & press [{keyCraftBarrier}] to craft one.";
-            }
-        }
-    }
-
-    // ==================== SEAMLESS MAP INTERACTIONS ====================
-
-    void HandleInteraction()
-    {
-        if (playerCamera == null) return;
-
-        // 1. Press Q (or keyCraftBarrier) while aiming at Recycler to craft a Portable Barrier (Costs 2 Scrap)
-        if (Input.GetKeyDown(keyCraftBarrier))
-        {
-            Ray qRay = new Ray(playerCamera.position, playerCamera.forward);
-            RaycastHit[] qHits = Physics.SphereCastAll(qRay, 0.35f, interactRange);
-
-            foreach (RaycastHit hit in qHits)
-            {
-                if (hit.collider.gameObject == this.gameObject || hit.collider.transform.IsChildOf(this.transform))
-                    continue;
-
-                if (hit.collider.CompareTag("Recycler") || hit.collider.gameObject.name.Contains("Recycler"))
-                {
-                    if (scrapCount >= 2)
-                    {
-                        scrapCount -= 2;
-                        barrierInventoryCount++;
-                        UpdateHUD();
-                        if (objectiveMessageText != null)
-                            objectiveMessageText.text = $"Crafted 1x Scrap Barrier! Press [{keyPlaceBarrier}] near the soil patch to place it.";
-                    }
-                    else if (objectiveMessageText != null)
-                    {
-                        objectiveMessageText.text = $"Need 2 Scrap to craft a Defensive Barrier [{keyCraftBarrier}]! (Current: {scrapCount}/2)";
-                    }
-                    return;
-                }
-            }
-        }
-
-        // 2. Press E (or keyInteract) for standard interactions
-        if (Input.GetKeyDown(keyInteract))
-        {
-            Ray ray = new Ray(playerCamera.position, playerCamera.forward);
-            Debug.DrawRay(ray.origin, ray.direction * interactRange, Color.green, 2f);
-
-            RaycastHit[] hits = Physics.SphereCastAll(ray, 0.35f, interactRange);
-
-            foreach (RaycastHit hit in hits)
-            {
-                if (hit.collider.gameObject == this.gameObject || hit.collider.transform.IsChildOf(this.transform))
-                    continue;
-
-                // A. Collect Scrap
-                if (hit.collider.CompareTag("Scrap") || hit.collider.gameObject.name.Contains("Scrap"))
-                {
-                    scrapCount++;
-                    totalScrapRecycled++;
-                    SaveProgress();
-                    Destroy(hit.collider.gameObject);
-                    UpdateHUD();
-                    return;
-                }
-                // B. Master Recycler (Stage 1: Open Door -> Stage 2: Craft Soil Scanner)
-                else if (hit.collider.CompareTag("Recycler") || hit.collider.gameObject.name.Contains("Recycler"))
-                {
-                    // Stage 1: Blast Door is still closed (Requires 3 Scrap)
-                    if (securityDoor != null && securityDoor.activeSelf)
-                    {
-                        if (scrapCount >= 3)
-                        {
-                            scrapCount -= 3;
-                            energyCells++;
-                            securityDoor.SetActive(false);
-                            UpdateHUD();
-                            if (objectiveMessageText != null)
-                                objectiveMessageText.text = "DOOR OPENED! Follow the glowing dot into the Rock Cave to find the Sapling.";
-                        }
-                        else if (objectiveMessageText != null)
-                        {
-                            objectiveMessageText.text = $"Need 3 Scrap to power Blast Door! (Current: {scrapCount}/3)";
-                        }
-                    }
-                    // Stage 2: Door is open, craft Soil Scanner (Requires 2 Scrap)
-                    else if (!hasSoilScanner)
-                    {
-                        if (scrapCount >= 2)
-                        {
-                            scrapCount -= 2;
-                            hasSoilScanner = true;
-                            UpdateHUD();
-                            if (objectiveMessageText != null)
-                                objectiveMessageText.text = $"SOIL SCANNER CRAFTED! Tip: Press [{keyCraftBarrier}] on Recycler (2 Scrap) to craft Barriers before planting!";
-                        }
-                        else if (objectiveMessageText != null)
-                        {
-                            objectiveMessageText.text = $"Need 2 Scrap to craft Soil Scanner! (Or press [{keyCraftBarrier}] with 2 Scrap to craft a Barrier)";
-                        }
-                    }
-                    else if (objectiveMessageText != null)
-                    {
-                        objectiveMessageText.text = $"Door & Scanner complete! Press [{keyCraftBarrier}] here with 2 Scrap to craft extra Barriers.";
-                    }
-                    return;
-                }
-                // C. Rescue Sapling inside the Rock Cave
-                else if (hit.collider.CompareTag("Sapling") || hit.collider.gameObject.name.Contains("Sapling"))
-                {
-                    hasSapling = true;
-                    Destroy(hit.collider.gameObject);
-                    UpdateHUD();
-                    if (objectiveMessageText != null)
-                        objectiveMessageText.text = "SAPLING SECURED! Gather 2 Scrap & return to the Recycler to craft a Soil Scanner.";
-                    return;
-                }
-                // D. Scan Soil Patch & Plant Sapling
-                else if (hit.collider.GetComponent<SoilPatchSlot>() != null || hit.collider.CompareTag("SoilPatch") || hit.collider.gameObject.name.Contains("FertileSoil"))
-                {
-                    SoilPatchSlot patch = hit.collider.GetComponent<SoilPatchSlot>();
-
-                    if (!hasSapling)
-                    {
-                        if (objectiveMessageText != null)
-                            objectiveMessageText.text = "Find the Sapling inside the Rock Cave first!";
-                        return;
-                    }
-                    if (!hasSoilScanner)
-                    {
-                        if (objectiveMessageText != null)
-                            objectiveMessageText.text = "SOIL QUALITY UNKNOWN! Return to the Zone 1 Recycler with 2 Scrap to craft a Soil Scanner!";
-                        return;
-                    }
-                    if (patch != null && !patch.isScanned)
-                    {
-                        string scanResult = patch.ScanSoil();
-                        if (objectiveMessageText != null)
-                            objectiveMessageText.text = scanResult;
-                        return;
-                    }
-                    if (patch == null || patch.isFertile)
-                    {
-                        // Plant the Sapling & start the 60s Tree Defense event!
-                        if (defenseManager != null)
-                        {
-                            defenseManager.StartDefenseEvent(hit.collider.transform.position);
-                        }
-                    }
-                    else if (objectiveMessageText != null)
-                    {
-                        objectiveMessageText.text = "This soil is toxic! Find and scan another Soil Patch.";
-                    }
-                    return;
-                }
-                // E. Reboot Drone with E
-                else if (hit.collider.GetComponent<CorpoDroneAI>() != null)
-                {
-                    hit.collider.GetComponent<CorpoDroneAI>().RebootAndSendBack();
-                    totalDronesRebooted++;
-                    SaveProgress();
-                    UpdateHUD();
-                    return;
-                }
-                // F. Optional Terminal to repair static barricades
-                else if (hit.collider.CompareTag("Terminal") || hit.collider.gameObject.name.Contains("Terminal"))
-                {
-                    if (defenseManager != null)
-                        defenseManager.RestoreAllBarricades();
-                    return;
-                }
-            }
-        }
-    }
-
-    void SaveProgress()
-    {
-        PlayerPrefs.SetInt("SavedScrapRecycled", totalScrapRecycled);
-        PlayerPrefs.SetInt("SavedDronesRebooted", totalDronesRebooted);
-        PlayerPrefs.Save();
-    }
-
-    public void LoseBatteryLife()
-    {
-        batteryLives--;
-        if (batteryLives > 0)
-        {
-            // Respawn instantly at the active checkpoint instead of reloading scene!
-            CharacterController cc = GetComponent<CharacterController>();
-            if (cc != null) cc.enabled = false;
-
-            if (CheckPointManager.Instance != null)
-            {
-                transform.position = CheckPointManager.Instance.GetSpawnPosition();
-            }
-
-            if (cc != null) cc.enabled = true;
-
-            if (objectiveMessageText != null)
-                objectiveMessageText.text = $"BATTERY CRITICAL! Life lost. Remaining lives: {batteryLives}";
-
-            UpdateHUD();
-        }
-        else
-        {
-            batteryLives = 3;
-            // Out of lives: Reset metrics and return to Start Menu
-            if (TryGetComponent<OneClickIndustrialHUD>(out var hudMgr))
-            {
-                hudMgr.OpenStartMenu();
-            }
-            else
-            {
-                SceneManager.LoadScene(SceneManager.GetActiveScene().buildIndex);
-            }
-        }
-    }
-
-    void UpdateHUD()
-    {
-        if (hudText != null)
-        {
-            string scannerStatus = hasSoilScanner ? "YES" : "NO";
-            float co2Saved = totalScrapRecycled * 2.4f;
-            hudText.text = $"Lives: {batteryLives} | Scrap: {scrapCount} | Barriers [{keyPlaceBarrier}]: {barrierInventoryCount} | Scanner: {scannerStatus} | CO2: {co2Saved:F1}kg";
-        }
-    }
+    public void UpdateHUD() { }
 }

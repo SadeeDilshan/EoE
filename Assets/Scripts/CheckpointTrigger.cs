@@ -8,9 +8,9 @@ public class CheckpointTrigger : MonoBehaviour
     {
         if (other.CompareTag("Player") || other.GetComponent<ARIEPlayerController>() != null)
         {
-            if (CheckPointManager.Instance != null)
+            if (CheckpointManager.Instance != null)
             {
-                CheckPointManager.Instance.UpdateCheckpoint(checkpointTransform != null ? checkpointTransform : transform);
+                CheckpointManager.Instance.UpdateCheckpoint(checkpointTransform != null ? checkpointTransform : transform);
             }
             // Disable trigger after activation so it only fires once
             gameObject.SetActive(false);

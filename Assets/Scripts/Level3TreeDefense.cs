@@ -1,145 +1,101 @@
+using System.Collections;
 using UnityEngine;
-using TMPro;
 using UnityEngine.SceneManagement;
+using TMPro;
 
 public class Level3TreeDefense : MonoBehaviour
 {
-    [Header("Seamless Map Trigger")]
-    [Tooltip("Keep FALSE for the connected map so the timer waits until you plant the sapling! Check TRUE only if testing Level 3 by itself.")]
+    [Header("Defense Settings")]
     public bool defenseStarted = false;
-
-    [Header("Tree & Timer Settings")]
-    public Transform growingTree;
-    public float survivalTime = 60f;
-    private float currentTimer;
+    public float survivalTime = 90f;
+    private float initialSurvivalTime = 90f;
     public float treeHealth = 100f;
-    public bool isGameWon = false;
+    public float maxTreeHealth = 100f;
 
-    [Header("Tree Growth Scale")]
-    public Vector3 startScale = new Vector3(0.5f, 1f, 0.5f);
-    public Vector3 fullGrownScale = new Vector3(3f, 8f, 3f);
-
-    [Header("Separate UI Texts")]
-    public TMP_Text timerText;   // Shows ONLY decreasing time (00:59)
-    public TMP_Text messageText; // Shows status messages & Tree Health
-
-    [Header("Barricade Defense System")]
-    public GameObject[] barricades;
-    public float breakdownInterval = 15f;
-    private float breakdownTimer;
-
-    [Header("Victory Eco-Jet Arrival")]
+    [Header("World References")]
+    public Transform growingTree;
     public GameObject ecoJet;
     public Transform jetLandingSpot;
 
+    [Header("UI References")]
+    public TMP_Text timerText;
+    public TMP_Text messageText;
+
+    [Header("Victory Return Settings")]
+    public float delayBeforeMainMenu = 4.0f;
+    private bool isVictory = false;
+
     void Start()
     {
-        currentTimer = survivalTime;
-        breakdownTimer = breakdownInterval;
-
+        initialSurvivalTime = Mathf.Max(10f, survivalTime);
         if (growingTree != null)
         {
-            growingTree.localScale = startScale;
-            // Hide the tree at the start until the player plants the sapling in the fertile soil
-            if (!defenseStarted)
-                growingTree.gameObject.SetActive(false);
+            growingTree.localScale = new Vector3(0.2f, 0.2f, 0.2f);
+            growingTree.gameObject.SetActive(false);
         }
-
         if (ecoJet != null)
+        {
             ecoJet.SetActive(false);
-
-        if (!defenseStarted)
-        {
-            if (timerText != null)
-                timerText.text = "";
-            if (messageText != null)
-                messageText.text = "OBJECTIVE: Scavenge 3 Scrap & Power the Recycler to open the Scrapyard Door.";
-        }
-        else
-        {
-            if (messageText != null)
-                messageText.text = "PROTECT THE SAPLING! | Tree Health: 100%";
         }
     }
 
-    // Called automatically by ARIEPlayerController when the player plants the Sapling in fertile soil
+    // Supports ARIEPlayerController calling StartDefenseEvent(patch.transform.position)
     public void StartDefenseEvent(Vector3 plantPosition)
+    {
+        if (growingTree != null)
+            growingTree.position = plantPosition;
+
+        StartDefenseSequence();
+    }
+
+    public void StartDefenseSequence()
     {
         if (defenseStarted) return;
         defenseStarted = true;
 
         if (growingTree != null)
         {
-            growingTree.position = plantPosition;
-            growingTree.localScale = startScale;
+            growingTree.localScale = new Vector3(0.3f, 0.3f, 0.3f);
             growingTree.gameObject.SetActive(true);
         }
 
-        // Command all CorpoDrones in the map to switch from Patrol Mode to Tree-Rush Mode
+        // Command all CorpoDrones to rush the newly planted Sapling!
         CorpoDroneAI[] drones = FindObjectsByType<CorpoDroneAI>(FindObjectsSortMode.None);
-        foreach (CorpoDroneAI drone in drones)
+        foreach (CorpoDroneAI d in drones)
         {
-            drone.attackTreeInLevel3 = true;
-            drone.targetTree = growingTree;
-            drone.level3Manager = this;
+            if (d != null)
+            {
+                d.targetTree = growingTree;
+                d.level3Manager = this;
+                d.attackTreeInLevel3 = true;
+            }
         }
 
         if (messageText != null)
-            messageText.text = "SAPLING PLANTED! Defend the Tree! (Press E on Drones to Reboot) | Tree HP: 100%";
+            messageText.text = "DEFEND THE SAPLING! Place barriers [Left-Click] & short-circuit drones [Right-Click]!";
     }
 
     void Update()
     {
-        // Wait until the sapling is planted before running the timer
-        if (!defenseStarted) return;
+        if (!defenseStarted || isVictory) return;
 
-        if (isGameWon)
+        if (survivalTime > 0f)
         {
-            if (ecoJet != null && jetLandingSpot != null)
+            survivalTime -= Time.deltaTime;
+            float progress = 1f - (survivalTime / initialSurvivalTime);
+
+            // Slowly grow the tree as timer counts down
+            if (growingTree != null)
+                growingTree.localScale = Vector3.Lerp(new Vector3(0.3f, 0.3f, 0.3f), new Vector3(1.5f, 1.5f, 1.5f), Mathf.Clamp01(progress));
+
+            if (timerText != null)
             {
-                ecoJet.transform.position = Vector3.MoveTowards(
-                    ecoJet.transform.position,
-                    jetLandingSpot.position,
-                    8f * Time.deltaTime
-                );
-            }
-            return;
-        }
-
-        // 1. Decrease Timer & Format as MM:SS (e.g., 00:45)
-        currentTimer -= Time.deltaTime;
-        if (currentTimer < 0f) currentTimer = 0f;
-
-        if (timerText != null)
-        {
-            int minutes = Mathf.FloorToInt(currentTimer / 60f);
-            int seconds = Mathf.FloorToInt(currentTimer % 60f);
-            timerText.text = string.Format("{0:00}:{1:00}", minutes, seconds);
-        }
-
-        // 2. Smoothly grow the tree
-        float growthProgress = 1f - (currentTimer / survivalTime);
-        if (growingTree != null)
-        {
-            growingTree.localScale = Vector3.Lerp(startScale, fullGrownScale, growthProgress);
-        }
-
-        // 3. Periodically drop a static barricade (if any are assigned) so player must guard/repair
-        breakdownTimer -= Time.deltaTime;
-        if (breakdownTimer <= 0f && barricades != null && barricades.Length > 0)
-        {
-            breakdownTimer = breakdownInterval;
-            int randomIndex = Random.Range(0, barricades.Length);
-            if (barricades[randomIndex] != null && barricades[randomIndex].activeSelf)
-            {
-                barricades[randomIndex].SetActive(false);
-                if (messageText != null)
-                    messageText.text = $"ALERT: Barricade Down! Press E on Terminal or Drones! | Tree HP: {Mathf.CeilToInt(treeHealth)}%";
+                int mins = Mathf.FloorToInt(Mathf.Max(0f, survivalTime) / 60f);
+                int secs = Mathf.FloorToInt(Mathf.Max(0f, survivalTime) % 60f);
+                timerText.text = $"{mins:00}:{secs:00}";
             }
         }
-
-        // 4. Win Condition
-        if (currentTimer <= 0f)
+        else
         {
             TriggerVictory();
         }
@@ -147,46 +103,84 @@ public class Level3TreeDefense : MonoBehaviour
 
     public void DamageTree(float amount)
     {
-        if (isGameWon || !defenseStarted) return;
+        if (!defenseStarted || isVictory) return;
 
-        treeHealth -= amount * Time.deltaTime;
-
+        treeHealth = Mathf.Max(0f, treeHealth - amount);
         if (messageText != null)
-        {
-            messageText.text = $"WARNING: DRONE DAMAGING TREE! (Press E on Drone to Reboot!) | Tree HP: {Mathf.CeilToInt(treeHealth)}%";
-        }
+            messageText.text = $"WARNING: CORPO-DRONE DAMAGING SAPLING! | Tree Health: {Mathf.CeilToInt(treeHealth)}%";
 
         if (treeHealth <= 0f)
         {
-            Debug.Log("THE SAPLING WAS DESTROYED! Restarting Mission...");
-            SceneManager.LoadScene(SceneManager.GetActiveScene().buildIndex);
-        }
-    }
+            defenseStarted = false;
+            treeHealth = maxTreeHealth;
+            survivalTime = initialSurvivalTime;
 
-    public void RestoreAllBarricades()
-    {
-        if (barricades == null) return;
+            if (growingTree != null)
+                growingTree.gameObject.SetActive(false);
 
-        foreach (GameObject b in barricades)
-        {
-            if (b != null) b.SetActive(true);
+            // Return drones to normal patrol until player plants the sapling again
+            CorpoDroneAI[] drones = FindObjectsByType<CorpoDroneAI>(FindObjectsSortMode.None);
+            foreach (CorpoDroneAI d in drones)
+            {
+                if (d != null) d.attackTreeInLevel3 = false;
+            }
+
+            if (messageText != null)
+                messageText.text = "SAPLING DESTROYED! Respawning at Checkpoint...";
+
+            ARIEPlayerController player = FindFirstObjectByType<ARIEPlayerController>();
+            if (player != null)
+            {
+                player.hasSapling = true; // Restore sapling so player can try planting again
+                player.LoseBatteryLife();
+            }
         }
-        if (messageText != null)
-            messageText.text = $"BARRICADES REPAIRED! Protect the Sapling! | Tree HP: {Mathf.CeilToInt(treeHealth)}%";
     }
 
     void TriggerVictory()
     {
-        isGameWon = true;
-        if (timerText != null) timerText.text = "00:00";
-        if (messageText != null) messageText.text = "ECOSYSTEM RESTORED! Eco-Alliance Jet Arriving... YOU WIN!";
+        if (isVictory) return;
+        isVictory = true;
+        survivalTime = 0f;
 
-        if (ecoJet != null) ecoJet.SetActive(true);
+        if (timerText != null)
+            timerText.text = "00:00";
 
-        CorpoDroneAI[] drones = FindObjectsByType<CorpoDroneAI>(FindObjectsSortMode.None);
-        foreach (CorpoDroneAI drone in drones)
+        // 1. Permanently reboot all CorpoDrones across the map
+        CorpoDroneAI[] allDrones = FindObjectsByType<CorpoDroneAI>(FindObjectsSortMode.None);
+        foreach (CorpoDroneAI d in allDrones)
         {
-            drone.gameObject.SetActive(false);
+            if (d != null)
+                d.PermanentVictoryReboot();
         }
+
+        // 2. Deploy the Eco-Alliance Extraction Jet
+        if (ecoJet != null)
+        {
+            ecoJet.SetActive(true);
+            if (jetLandingSpot != null)
+                ecoJet.transform.position = jetLandingSpot.position;
+        }
+
+        if (messageText != null)
+            messageText.text = "MISSION ACCOMPLISHED! All drones permanently rebooted & Sapling restored! Returning to Main Menu...";
+
+        // 3. Return to Main Start Menu Panel after delay
+        StartCoroutine(ReturnToMainMenuRoutine());
+    }
+
+    IEnumerator ReturnToMainMenuRoutine()
+    {
+        yield return new WaitForSeconds(delayBeforeMainMenu);
+
+        ARIEPlayerController.batteryLives = 3;
+        ARIEPlayerController.totalScrapRecycled = 0;
+        ARIEPlayerController.totalDronesRebooted = 0;
+
+        HUDController hud = FindFirstObjectByType<HUDController>();
+        if (hud != null)
+            hud.showStartMenuOnLaunch = true;
+
+        SceneManager.LoadScene(SceneManager.GetActiveScene().buildIndex);
     }
 }
